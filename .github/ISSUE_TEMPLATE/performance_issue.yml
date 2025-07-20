@@ -1,0 +1,83 @@
+name: Performance Issue
+description: Report performance problems or optimization opportunities
+title: "[PERFORMANCE] "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us improve performance!
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component has performance issues?
+      options:
+        - OCR Processing
+        - Reference Removal
+        - LLM Extraction
+        - Batch Processing
+        - Memory Usage
+        - Pipeline Overall
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: performance-issue
+    attributes:
+      label: Performance Issue
+      description: Describe the performance problem
+      placeholder: |
+        - Current processing time: X seconds/paper
+        - Expected processing time: Y seconds/paper
+        - Memory usage: Z MB
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-case
+    attributes:
+      label: Test Case
+      description: Provide details about the test case that shows the performance issue
+      placeholder: |
+        - Paper type: [e.g. arXiv ID, local PDF]
+        - Paper size: [e.g. 10 pages, 2MB]
+        - Configuration used: [OCR model, LLM model]
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: System specifications
+      placeholder: |
+        - OS: [e.g. macOS, Linux, Windows]
+        - CPU: [e.g. M1 Mac, Intel i7]
+        - RAM: [e.g. 16GB]
+        - GPU: [e.g. NVIDIA RTX 3080, Apple M1]
+        - Python version: [e.g. 3.9]
+    validations:
+      required: true
+
+  - type: textarea
+    id: profiling-data
+    attributes:
+      label: Profiling Data
+      description: Any profiling or timing information you've collected
+      render: shell
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is this performance issue?
+      options:
+        - Low - Minor slowdown
+        - Medium - Noticeable impact on workflow
+        - High - Significantly impacts usability
+        - Critical - Makes the tool unusable
+    validations:
+      required: true

@@ -21,6 +21,27 @@ ocr:
   mistral_ocr:
     max_length: 2048
     temperature: 0.1
+    
+  # Mistral OCR API settings (direct API)
+  mistral_ocr_api:
+    api_key: null  # Set via environment variable MISTRAL_API_KEY
+    base_url: "https://api.mistral.ai"
+    model: "mistral-ocr-latest"
+    include_image_base64: true
+    max_retries: 3
+    retry_delay: 1.0
+    timeout: 120
+    
+  # Mistral OCR OpenRouter API settings
+  mistral_ocr_openrouter:
+    api_key: null  # Set via environment variable OPENROUTER_API_KEY
+    base_url: "https://openrouter.ai/api/v1"
+    model: "mistral/mistral-ocr-latest"
+    site_url: "https://arxiv-scraper.local"
+    site_name: "ArXiv Scraper"
+    max_retries: 3
+    retry_delay: 1.0
+    timeout: 120
   
   nougat:
     model_size: "base"  # Options: base, small
@@ -69,7 +90,7 @@ text_processing:
 # LLM Processing Settings
 llm:
   # Primary LLM model
-  model: "gpt-4"  # Options: gpt-4, gpt-3.5-turbo, claude-3-opus, claude-3-sonnet
+  model: "anthropic/claude-4-sonnet"  # Options: gpt-4, gpt-3.5-turbo, claude-3-opus, claude-3-sonnet, or OpenRouter models
   
   # Generation parameters
   temperature: 0.1
@@ -84,6 +105,9 @@ llm:
   
   # Fallback models
   fallback_models:
+    - "anthropic/claude-3-haiku"
+    - "openai/gpt-4"
+    - "mistral/mistral-large"
     - "gpt-3.5-turbo"
     - "claude-3-sonnet"
   
@@ -94,6 +118,78 @@ llm:
     
   anthropic:
     api_key: null  # Set via environment variable ANTHROPIC_API_KEY
+  
+  # OpenRouter API settings
+  openrouter:
+    api_key: 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  # Set via environment variable OPENROUTER_API_KEY
+    base_url: "https://openrouter.ai/api/v1"
+    model: "moonshotai/kimi-k2"  # Default model
+    reasoning_model: # Default reasoning model
+      name: "moonshotai/kimi-k2"
+      provider: "anthropic"  # Default provider
+    site_url: "https://arxiv-scraper.local"
+    site_name: "ArXiv Scraper"
+    temperature: 0.1
+    max_tokens: 2000
+    max_retries: 3
+    retry_delay: 1.0
+    timeout: 120
+    
+    # Caching settings
+    cache_enabled: true
+    cache_ttl: 3600  # 1 hour
+    cache_dir: "./cache/openrouter"
+    
+    # Model selection preferences
+    model_preferences:
+      task_types:
+        general: ["anthropic/claude-3-sonnet", "openai/gpt-4", "google/gemini-pro"]
+        coding: ["anthropic/claude-3-opus", "openai/gpt-4", "google/gemini-pro"]
+        conversation: ["anthropic/claude-3-sonnet", "anthropic/claude-3-haiku", "openai/gpt-3.5-turbo"]
+        analysis: ["anthropic/claude-3-opus", "openai/gpt-4", "google/gemini-pro"]
+      
+      # Budget constraints (cost per token)
+      budget_tiers:
+        low: 0.000001  # Under $0.000001 per token
+        medium: 0.00001  # Under $0.00001 per token
+        high: 0.00005   # Under $0.00005 per token
+        unlimited: null
+    
+    # Provider filtering
+    provider_preferences:
+      # Preferred providers (in order)
+      preferred: ["anthropic", "openai", "google", "mistral", "baseten/fp8"]
+      
+      # Providers to avoid
+      blocked: []
+      
+      # Privacy requirements
+      privacy_requirements:
+        no_logging: true  # Avoid providers that may log prompts
+        no_training: true  # Avoid providers that may train on data
+        moderated_only: false  # Only use moderated providers
+    
+    # Model filtering
+    model_filters:
+      min_context_length: 8000  # Minimum context length
+      max_cost_per_token: 0.00005  # Maximum cost per token
+      required_modalities: ["text->text"]  # Required input/output modalities
+      
+      # Exclude specific models
+      exclude_models: []
+    
+    # Endpoint selection criteria
+    endpoint_preferences:
+      selection_criteria: "cost"  # Options: cost, latency, uptime, throughput
+      min_uptime: 0.95  # Minimum uptime percentage
+      max_latency: 5000  # Maximum latency in milliseconds
+      
+      # Fallback strategy
+      fallback_strategy: "next_available"  # Options: next_available, best_alternative, fail
+    
+    # Popular OpenRouter models (for reference)
+    available_models:
+      - "moonshotai/kimi-k2"
 
 # Extraction Target Items
 extraction_items:
@@ -231,3 +327,21 @@ arxiv:
     user_agent: "arXiv-Scraper/1.0"
     timeout: 30
     max_retries: 3
+
+# ------------------------------------------------------------------------------
+# Research Assistant Settings
+# ------------------------------------------------------------------------------
+research_assistant:
+  embedding_batch_size: 128
+  project_base_path: "output/research_projects"
+  default_model: # Default reasoning model
+      name: "moonshotai/kimi-k2"
+      provider:
+        order: ["baseten/fp8","moonshotai"]
+
+  reasoning_model: # Default reasoning model
+      name: "moonshotai/kimi-k2"
+      provider:
+        order: ["baseten/fp8","moonshotai"]
+
+  

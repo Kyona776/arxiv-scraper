@@ -2,8 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(gemini:*)"
+      "Bash(gemini:*)",
+      "Bash(uv:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:docs.mistral.ai)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(python:*)"
     ],
-    "deny": []
+    "deny": [
+      "Bash(pip:*)"
+    ]
   }
 }

@@ -6,10 +6,13 @@ LLM解析モジュール
 import os
 import json
 import time
+import requests
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, asdict
 from abc import ABC, abstractmethod
 from loguru import logger
+
+from openrouter_manager import create_openrouter_manager, OpenRouterManager
 
 
 @dataclass
@@ -505,6 +508,361 @@ class AnthropicProvider(LLMProvider):
         return provider._calculate_confidence(value)
 
 
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter API プロバイダー"""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.model = config.get('model', 'anthropic/claude-3-sonnet')
+        self.base_url = config.get('base_url', 'https://openrouter.ai/api/v1')
+        self.temperature = config.get('temperature', 0.1)
+        self.max_tokens = config.get('max_tokens', 2000)
+        self.max_retries = config.get('max_retries', 3)
+        self.retry_delay = config.get('retry_delay', 1.0)
+        self.timeout = config.get('timeout', 120)
+        self.site_url = config.get('site_url', 'https://arxiv-scraper.local')
+        self.site_name = config.get('site_name', 'ArXiv Scraper')
+        
+        # API key設定
+        self.api_key = config.get('api_key') or os.environ.get('OPENROUTER_API_KEY')
+        if not self.api_key:
+            logger.warning("OpenRouter API key not found")
+        
+        # OpenRouter manager for model validation and info
+        self.openrouter_manager = None
+        try:
+            self.openrouter_manager = create_openrouter_manager({'openrouter': config})
+            logger.info("OpenRouter manager initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize OpenRouter manager: {e}")
+        
+        # Validate model on initialization
+        self._validate_model()
+    
+    def _validate_model(self):
+        """Validate the configured model"""
+        if not self.openrouter_manager or not self.openrouter_manager.is_available():
+            return
+        
+        try:
+            if self.openrouter_manager.validate_model(self.model):
+                logger.info(f"Model {self.model} validated successfully")
+            else:
+                logger.warning(f"Model {self.model} not found in OpenRouter. Using anyway.")
+        except Exception as e:
+            logger.warning(f"Model validation failed: {e}")
+    
+    def is_available(self) -> bool:
+        """OpenRouterが利用可能かチェック"""
+        return bool(self.api_key)
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about the current model"""
+        if not self.openrouter_manager or not self.openrouter_manager.is_available():
+            return {'error': 'OpenRouter manager not available'}
+        
+        try:
+            return self.openrouter_manager.get_model_info(self.model)
+        except Exception as e:
+            logger.error(f"Failed to get model info: {e}")
+            return {'error': str(e)}
+    
+    def get_available_models(self) -> List[str]:
+        """Get list of available models"""
+        if not self.openrouter_manager or not self.openrouter_manager.is_available():
+            return []
+        
+        try:
+            models = self.openrouter_manager.get_models()
+            return [model.id for model in models]
+        except Exception as e:
+            logger.error(f"Failed to get available models: {e}")
+            return []
+    
+    def get_model_recommendations(self, task_type: str = 'general', budget: Optional[float] = None) -> List[str]:
+        """Get model recommendations"""
+        if not self.openrouter_manager or not self.openrouter_manager.is_available():
+            return []
+        
+        try:
+            models = self.openrouter_manager.get_recommendations(task_type, budget)
+            return [model.id for model in models]
+        except Exception as e:
+            logger.error(f"Failed to get recommendations: {e}")
+            return []
+    
+    def extract_information(
+        self, 
+        text: str, 
+        items: List[ExtractionItem],
+        paper_metadata: Optional[Dict] = None
+    ) -> ExtractionResult:
+        """OpenRouterを使用した情報抽出"""
+        start_time = time.time()
+        
+        if not self.is_available():
+            return ExtractionResult(
+                success=False,
+                data={},
+                model_used=self.model,
+                processing_time=0,
+                confidence_scores={},
+                errors=["OpenRouter API key not available"],
+                metadata={}
+            )
+        
+        try:
+            # プロンプト生成
+            prompt = self._create_extraction_prompt(text, items, paper_metadata)
+            
+            # OpenRouter API呼び出し（リトライ機能付き）
+            for attempt in range(self.max_retries):
+                try:
+                    response = self._call_openrouter_api(prompt)
+                    
+                    # レスポンス解析
+                    result = self._parse_openrouter_response(response, items)
+                    result.processing_time = time.time() - start_time
+                    result.model_used = self.model
+                    
+                    logger.info(f"OpenRouter extraction completed in {result.processing_time:.2f}s")
+                    return result
+                    
+                except Exception as e:
+                    logger.warning(f"OpenRouter API attempt {attempt + 1} failed: {str(e)}")
+                    if attempt < self.max_retries - 1:
+                        time.sleep(self.retry_delay * (2 ** attempt))  # 指数バックオフ
+                    else:
+                        raise
+        
+        except Exception as e:
+            logger.error(f"OpenRouter extraction failed: {str(e)}")
+            return ExtractionResult(
+                success=False,
+                data={},
+                model_used=self.model,
+                processing_time=time.time() - start_time,
+                confidence_scores={},
+                errors=[str(e)],
+                metadata={}
+            )
+    
+    def _call_openrouter_api(self, prompt: str) -> Dict:
+        """OpenRouter APIを呼び出し"""
+        headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': self.site_url,
+            'X-Title': self.site_name
+        }
+        
+        # システムプロンプトとユーザープロンプトに分割
+        system_prompt = "あなたは学術論文分析の専門家です。与えられた論文から指定された情報を正確に抽出してください。必ずJSON形式で回答してください。"
+        
+        payload = {
+            'model': self.model,
+            'messages': [
+                {
+                    'role': 'system',
+                    'content': system_prompt
+                },
+                {
+                    'role': 'user',
+                    'content': prompt
+                }
+            ],
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'stream': False
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=self.timeout
+        )
+        
+        if response.status_code == 429:
+            raise Exception("Rate limit exceeded")
+        elif response.status_code != 200:
+            response.raise_for_status()
+        
+        return response.json()
+    
+    def _parse_openrouter_response(self, response: Dict, items: List[ExtractionItem]) -> ExtractionResult:
+        """OpenRouter APIレスポンスを解析"""
+        try:
+            if 'choices' not in response or not response['choices']:
+                raise Exception("Invalid response format")
+            
+            content = response['choices'][0]['message']['content']
+            
+            # JSON解析
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                # JSON解析失敗時はフォールバック処理
+                data = self._extract_from_text(content, items)
+            
+            # データ検証と正規化
+            validated_data = {}
+            confidence_scores = {}
+            errors = []
+            
+            for item in items:
+                value = data.get(item.name, "N/A")
+                
+                # 文字数制限チェック
+                if len(value) > item.max_length:
+                    value = value[:item.max_length] + "..."
+                    errors.append(f"{item.name}が文字数制限を超過（切り詰め）")
+                
+                # 必須項目チェック
+                if item.required and (not value or value == "N/A"):
+                    errors.append(f"必須項目{item.name}が未抽出")
+                    confidence_scores[item.name] = 0.0
+                else:
+                    confidence_scores[item.name] = self._calculate_confidence(value)
+                
+                validated_data[item.name] = value
+            
+            # 全体の成功判定
+            success = len([e for e in errors if "必須項目" in e]) == 0
+            
+            # メタデータの取得
+            metadata = {}
+            if 'usage' in response:
+                metadata['usage'] = response['usage']
+            
+            return ExtractionResult(
+                success=success,
+                data=validated_data,
+                model_used=self.model,
+                processing_time=0,  # 後で設定
+                confidence_scores=confidence_scores,
+                errors=errors,
+                metadata=metadata
+            )
+            
+        except Exception as e:
+            logger.error(f"OpenRouter response parsing failed: {str(e)}")
+            return ExtractionResult(
+                success=False,
+                data={},
+                model_used=self.model,
+                processing_time=0,
+                confidence_scores={},
+                errors=[f"レスポンス解析エラー: {str(e)}"],
+                metadata={}
+            )
+    
+    def _create_extraction_prompt(
+        self, 
+        text: str, 
+        items: List[ExtractionItem],
+        paper_metadata: Optional[Dict] = None
+    ) -> str:
+        """抽出用プロンプトを生成"""
+        # 項目説明の作成
+        items_description = []
+        for item in items:
+            required_str = "必須" if item.required else "任意"
+            items_description.append(
+                f"- {item.name}: {item.description} "
+                f"(最大{item.max_length}文字, {required_str})"
+            )
+        
+        items_list = "\n".join(items_description)
+        
+        # メタデータ情報の追加
+        metadata_str = ""
+        if paper_metadata:
+            metadata_str = f"""
+論文メタデータ:
+- タイトル: {paper_metadata.get('title', 'N/A')}
+- 著者: {', '.join(paper_metadata.get('authors', []))}
+- 分野: {', '.join(paper_metadata.get('categories', []))}
+- 発表年: {paper_metadata.get('published', 'N/A')[:4] if paper_metadata.get('published') else 'N/A'}
+- URL: {paper_metadata.get('abs_url', 'N/A')}
+"""
+        
+        prompt = f"""以下の学術論文テキストから、指定された項目を抽出してください。
+
+{metadata_str}
+
+抽出対象項目:
+{items_list}
+
+抽出ルール:
+1. 各項目について、論文の内容を正確に読み取り、適切な情報を抽出してください
+2. 情報が明記されていない場合は "N/A" と回答してください
+3. 指定された文字数制限を守ってください
+4. 日本語で回答してください
+5. 結果は以下のJSON形式で出力してください:
+
+{{
+  "手法の肝": "抽出した内容",
+  "制限事項": "抽出した内容",
+  "対象ナレッジ": "抽出した内容",
+  "URL": "抽出した内容",
+  "タイトル": "抽出した内容",
+  "出版年": "抽出した内容",
+  "研究分野": "抽出した内容",
+  "課題設定": "抽出した内容",
+  "論文の主張": "抽出した内容"
+}}
+
+論文テキスト:
+{text[:10000]}  # 最初の10000文字に制限
+"""
+        
+        return prompt
+    
+    def _extract_from_text(self, text: str, items: List[ExtractionItem]) -> Dict[str, str]:
+        """テキストから直接抽出（JSON解析失敗時のフォールバック）"""
+        data = {}
+        
+        for item in items:
+            # 簡単なパターンマッチングで抽出を試行
+            pattern_variations = [
+                f'"{item.name}"\\s*:\\s*"([^"]*)"',
+                f'{item.name}\\s*:\\s*([^\n]*)',
+                f'{item.name}\\s*は\\s*([^\n]*)',
+            ]
+            
+            import re
+            for pattern in pattern_variations:
+                match = re.search(pattern, text)
+                if match:
+                    data[item.name] = match.group(1).strip()
+                    break
+            else:
+                data[item.name] = "N/A"
+        
+        return data
+    
+    def _calculate_confidence(self, value: str) -> float:
+        """抽出結果の信頼度を計算"""
+        if not value or value == "N/A":
+            return 0.0
+        
+        # 簡単な信頼度計算
+        score = 0.5  # ベーススコア
+        
+        # 長さによる加点
+        if len(value) > 10:
+            score += 0.2
+        if len(value) > 50:
+            score += 0.2
+        
+        # 具体性による加点
+        if any(keyword in value.lower() for keyword in ['手法', '方法', 'algorithm', 'method']):
+            score += 0.1
+        
+        return min(score, 1.0)
+
+
 class LLMExtractor:
     """LLM情報抽出メインクラス"""
     
@@ -610,6 +968,38 @@ class LLMExtractor:
                     logger.info("Anthropic provider initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize Anthropic provider: {str(e)}")
+        
+        # OpenRouter provider
+        if 'openrouter' in self.config:
+            try:
+                provider = OpenRouterProvider(self.config['openrouter'])
+                if provider.is_available():
+                    # OpenRouter supports many models - add the ones specified in config
+                    model_name = self.config['openrouter'].get('model', 'anthropic/claude-3-sonnet')
+                    self.providers[model_name] = provider
+                    
+                    # Add common OpenRouter model aliases
+                    common_models = {
+                        'anthropic/claude-3-opus': provider,
+                        'anthropic/claude-3-sonnet': provider,
+                        'anthropic/claude-3-haiku': provider,
+                        'openai/gpt-4': provider,
+                        'openai/gpt-3.5-turbo': provider,
+                        'google/gemini-pro': provider,
+                        'mistral/mistral-large': provider,
+                        'mistral/mistral-medium': provider,
+                        'meta/llama-3-70b': provider,
+                        'cohere/command-r-plus': provider
+                    }
+                    
+                    # Only add models that are not already registered
+                    for model, prov in common_models.items():
+                        if model not in self.providers:
+                            self.providers[model] = prov
+                    
+                    logger.info(f"OpenRouter provider initialized with model: {model_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenRouter provider: {str(e)}")
     
     def extract_from_text(
         self, 
